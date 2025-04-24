@@ -1,0 +1,95 @@
+# .github/workflows/update-folders.yml
+
+name: Update Top-Level Folders List
+
+# Controls when the workflow will run
+on:
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+  # Runs the workflow automatically every day at midnight UTC
+  schedule:
+    - cron: '0 0 * * *' # Runs daily at midnight UTC
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  # This workflow contains a single job called "update-folders"
+  update-folders:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    # Grant write permissions to the GITHUB_TOKEN for committing changes
+    permissions:
+      contents: write
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # 1. Check out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Define target repository details
+      - name: Set target repository details
+        id: repo_details
+        run: |
+          echo "OWNER=google" >> $GITHUB_ENV
+          echo "REPO=material-design-icons" >> $GITHUB_ENV
+          echo "TARGET_FILE=folders.txt" >> $GITHUB_ENV
+          echo "TEMP_FILE=new_folders.txt" >> $GITHUB_ENV
+
+      # 3. Fetch folder list from the target repository using GitHub API
+      - name: Fetch folder list from target repo
+        run: |
+          echo "Fetching folders from https://github.com/${{ env.OWNER }}/${{ env.REPO }}"
+          # Use curl to get the contents, jq to filter for directories and extract names, sort alphabetically
+          curl -s -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ env.OWNER }}/${{ env.REPO }}/contents/" | \
+            jq -r '.[] | select(.type == "dir") | .name' | \
+            sort > ${{ env.TEMP_FILE }}
+
+          echo "Fetched list saved to ${{ env.TEMP_FILE }}"
+          cat ${{ env.TEMP_FILE }} # Optional: Print the fetched list to logs
+
+      # 4. Check if the fetched list is different from the existing file
+      - name: Check for differences
+        id: diff
+        run: |
+          # Create the target file if it doesn't exist to avoid diff errors
+          touch ${{ env.TARGET_FILE }}
+
+          # Compare the new list with the existing one. Exit code 0 means no changes.
+          if diff --quiet ${{ env.TARGET_FILE }} ${{ env.TEMP_FILE }}; then
+            echo "No changes detected in folder list."
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "Folder list has changed. Updating ${{ env.TARGET_FILE }}."
+            echo "changed=true" >> $GITHUB_OUTPUT
+            # Overwrite the old file with the new list
+            mv ${{ env.TEMP_FILE }} ${{ env.TARGET_FILE }}
+          fi
+        # Ensure temporary file is removed even if comparison fails
+        continue-on-error: false # Stop if diff fails unexpectedly
+
+      # 5. Commit and push changes if differences were found
+      - name: Commit and push changes
+        # Only run this step if the 'changed' output from the previous step was 'true'
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add ${{ env.TARGET_FILE }}
+          # Check if there are staged changes before committing
+          if git diff --staged --quiet; then
+            echo "No changes to commit after add."
+          else
+            git commit -m "Automated update of folder list from ${{ env.OWNER }}/${{ env.REPO }}"
+            git push
+            echo "Changes committed and pushed."
+          fi
+
+      # 6. Clean up temporary file if it wasn't moved (i.e., no changes)
+      - name: Clean up temporary file
+        if: always() # Always run cleanup, regardless of previous steps' success/failure
+        run: |
+          rm -f ${{ env.TEMP_FILE }}
+          echo "Temporary file cleaned up."
+
